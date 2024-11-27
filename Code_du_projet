@@ -1,0 +1,363 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity capteurXafficheurXservoXbuzzer is
+    Port (
+        clk         : in  STD_LOGIC;
+        trigger1    : out STD_LOGIC;
+        echo1       : in  STD_LOGIC;
+        trigger2    : out STD_LOGIC;
+        echo2       : in  STD_LOGIC;
+        trigger3    : out STD_LOGIC;
+        echo3       : in  STD_LOGIC;
+        sw1, sw2, sw3, sw4 : in STD_LOGIC; -- Interrupteurs pour sélectionner le mode
+        swM1, swM2 : in STD_LOGIC;        -- Interrupteurs pour le contrôle manuel des servomoteurs
+        led1, led2, led3, led4, led5, led6 : out STD_LOGIC; -- LEDs pour les modes
+        led_green   : out STD_LOGIC;
+        segments0, segments1, segments2, segments3 : out STD_LOGIC_VECTOR(6 downto 0);
+        pwm_out     : out STD_LOGIC;  -- Premier servomoteur
+        pwm_out2    : out STD_LOGIC;  -- Second servomoteur
+        buzzer_out  : out STD_LOGIC
+    );
+end capteurXafficheurXservoXbuzzer;
+
+architecture Behavioral of capteurXafficheurXservoXbuzzer is
+    -- Constantes
+    constant CLK_FREQ        : integer := 50_000_000; -- Horloge à 50 MHz
+    constant TRIGGER_PERIOD  : integer := 12_500_000; -- 1 ms pour les triggers
+    constant THRESHOLD_COUNT : integer := 30000;      -- Seuil pour les échos (distance)
+    constant PWM_PERIOD      : integer := 1_000_000;  -- Période du PWM
+    constant PWM_HIGH_MIN    : integer := 50_000;     -- Impulsion pour 0°
+    constant PWM_HIGH_MAX    : integer := 100_000;    -- Impulsion pour 180°
+    constant BUZZER_FREQ     : integer := 1000;       -- Fréquence du buzzer (1 kHz)
+    constant BUZZER_COUNTER  : integer := CLK_FREQ / (2 * BUZZER_FREQ); -- Compteur buzzer
+    constant BEEP_DURATION   : integer := CLK_FREQ / 2; -- Durée d'un bip (0.5s)
+    constant LED_BLINK_PERIOD: integer := CLK_FREQ / 2; -- LEDs clignotent toutes les 0.5s
+
+    -- Signaux internes
+    signal mode_select : STD_LOGIC := '0'; -- Mode sélectionné : '0' pour automatique, '1' pour manuel
+    signal led5_state, led6_state : STD_LOGIC := '0'; -- LED pour mode manuel et automatique
+    signal trigger_counter1, trigger_counter2, trigger_counter3 : integer := 0;
+    signal trigger_delay1, trigger_delay2, trigger_delay3 : integer := 0;
+    signal echo_counter1, echo_counter2, echo_counter3 : integer := 0;
+    signal echo_last1, echo_last2, echo_last3 : STD_LOGIC := '0';
+
+    signal led1_state, led2_state : STD_LOGIC := '0';
+    signal led_green_state : STD_LOGIC := '1';
+
+    signal pwm_counter, pwm_counter2 : integer := 0;
+    signal swp, swp2, swp3, swp4 : STD_LOGIC := '0';
+
+    signal buzzer_signal : STD_LOGIC := '0';
+    signal buzzer_enable : STD_LOGIC := '0';
+    signal beep_counter  : integer := 0;
+    signal beep_state    : STD_LOGIC := '0';
+
+    signal led_blink_counter : integer := 0;
+    signal led_blink_state : STD_LOGIC := '0';
+    signal alert_active : STD_LOGIC := '0';
+
+begin
+    -- Sélection du mode
+    process(sw1, sw2, sw3, sw4)
+    begin
+        if (sw1 = '0' and sw2 = '1' and sw3 = '0' and sw4 = '1') then
+            mode_select <= '1'; -- Mode manuel activé
+        else
+            mode_select <= '0'; -- Mode automatique par défaut
+        end if;
+    end process;
+
+    -- Gestion des LEDs d'indication du mode
+    process(mode_select)
+    begin
+        if mode_select = '1' then
+            led5_state <= '1'; -- LED5 pour mode manuel
+            led6_state <= '0'; -- LED6 éteinte
+        else
+            led5_state <= '0'; -- LED5 éteinte
+            led6_state <= '1'; -- LED6 pour mode automatique
+        end if;
+    end process;
+
+    led5 <= led5_state;
+    led6 <= led6_state;
+
+    -- Gestion du PWM pour le premier servomoteur
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if pwm_counter < PWM_PERIOD then
+                pwm_counter <= pwm_counter + 1;
+            else
+                pwm_counter <= 0;
+            end if;
+
+            if mode_select = '1' then -- Mode manuel
+                if swM1 = '1' then
+                    if pwm_counter < PWM_HIGH_MAX then
+                        pwm_out <= '1';
+                    else
+                        pwm_out <= '0';
+                    end if;
+                else
+                    if pwm_counter < PWM_HIGH_MIN then
+                        pwm_out <= '1';
+                    else
+                        pwm_out <= '0';
+                    end if;
+                end if;
+            else -- Mode automatique
+                if swp = '1' then
+                    if pwm_counter < PWM_HIGH_MAX then
+                        pwm_out <= '1';
+                    else
+                        pwm_out <= '0';
+                    end if;
+                elsif swp2 = '1' then
+                    if pwm_counter < PWM_HIGH_MIN then
+                        pwm_out <= '1';
+                    else
+                        pwm_out <= '0';
+                    end if;
+                else
+                    pwm_out <= '0';
+                end if;
+            end if;
+        end if;
+    end process;
+
+    -- Gestion du PWM pour le second servomoteur
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if pwm_counter2 < PWM_PERIOD then
+                pwm_counter2 <= pwm_counter2 + 1;
+            else
+                pwm_counter2 <= 0;
+            end if;
+
+            if mode_select = '1' then -- Mode manuel
+                if swM2 = '1' then
+                    if pwm_counter2 < PWM_HIGH_MAX then
+                        pwm_out2 <= '1';
+                    else
+                        pwm_out2 <= '0';
+                    end if;
+                else
+                    if pwm_counter2 < PWM_HIGH_MIN then
+                        pwm_out2 <= '1';
+                    else
+                        pwm_out2 <= '0';
+                    end if;
+                end if;
+            else -- Mode automatique
+                if swp3 = '1' then
+                    if pwm_counter2 < PWM_HIGH_MAX then
+                        pwm_out2 <= '1';
+                    else
+                        pwm_out2 <= '0';
+                    end if;
+                elsif swp4 = '1' then
+                    if pwm_counter2 < PWM_HIGH_MIN then
+                        pwm_out2 <= '1';
+                    else
+                        pwm_out2 <= '0';
+                    end if;
+                else
+                    pwm_out2 <= '0';
+                end if;
+            end if;
+        end if;
+    end process;
+    -- Gestion des capteurs et LEDs en mode automatique
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if mode_select = '0' then -- Mode automatique
+                -- Capteur 1 : Détection principale
+                if trigger_counter1 < TRIGGER_PERIOD then
+                    trigger_counter1 <= trigger_counter1 + 1;
+                    if trigger_delay1 < 500 then
+                        trigger_delay1 <= trigger_delay1 + 1;
+                        trigger1 <= '1';
+                    else
+                        trigger1 <= '0';
+                    end if;
+                else
+                    trigger_counter1 <= 0;
+                    trigger_delay1 <= 0;
+                end if;
+
+                if echo1 = '1' then
+                    echo_counter1 <= echo_counter1 + 1;
+                else
+                    echo_counter1 <= 0;
+                end if;
+
+                if echo_last1 = '1' and echo1 = '0' then
+                    if echo_counter1 < THRESHOLD_COUNT then
+                        swp <= '1';                -- Active le premier servomoteur
+                        swp3 <= '1';               -- Active le second servomoteur
+                        buzzer_enable <= '1';     -- Active le buzzer
+                        led_green_state <= '0';   -- Éteint la LED verte
+                    else
+                        swp <= '0';
+                        swp3 <= '0';
+                    end if;
+                end if;
+                echo_last1 <= echo1;
+
+                -- Capteur 2 : Réinitialisation
+                if trigger_counter2 < TRIGGER_PERIOD then
+                    trigger_counter2 <= trigger_counter2 + 1;
+                    if trigger_delay2 < 500 then
+                        trigger_delay2 <= trigger_delay2 + 1;
+                        trigger2 <= '1';
+                    else
+                        trigger2 <= '0';
+                    end if;
+                else
+                    trigger_counter2 <= 0;
+                    trigger_delay2 <= 0;
+                end if;
+
+                if echo2 = '1' then
+                    echo_counter2 <= echo_counter2 + 1;
+                else
+                    echo_counter2 <= 0;
+                end if;
+
+                if echo_last2 = '1' and echo2 = '0' then
+                    if echo_counter2 < THRESHOLD_COUNT then
+                        swp2 <= '1';              -- Réinitialise le premier servomoteur
+                        swp4 <= '1';              -- Réinitialise le second servomoteur
+                        buzzer_enable <= '0';     -- Désactive le buzzer
+                        led_green_state <= '1';   -- Rallume la LED verte
+                    else
+                        swp2 <= '0';
+                        swp4 <= '0';
+                    end if;
+                end if;
+                echo_last2 <= echo2;
+
+                -- Capteur 3 : Alerte secondaire
+                if trigger_counter3 < TRIGGER_PERIOD then
+                    trigger_counter3 <= trigger_counter3 + 1;
+                    if trigger_delay3 < 500 then
+                        trigger_delay3 <= trigger_delay3 + 1;
+                        trigger3 <= '1';
+                    else
+                        trigger3 <= '0';
+                    end if;
+                else
+                    trigger_counter3 <= 0;
+                    trigger_delay3 <= 0;
+                end if;
+
+                if echo3 = '1' then
+                    echo_counter3 <= echo_counter3 + 1;
+                else
+                    echo_counter3 <= 0;
+                end if;
+
+                if echo_last3 = '1' and echo3 = '0' then
+                    if echo_counter3 < THRESHOLD_COUNT then
+                        alert_active <= '1';
+                    else
+                        alert_active <= '0';
+                    end if;
+                end if;
+                echo_last3 <= echo3;
+            else
+                -- Mode manuel : Toutes les actions sont désactivées sauf indication LED
+                trigger1 <= '0';
+                trigger2 <= '0';
+                trigger3 <= '0';
+                swp <= '0';
+                swp2 <= '0';
+                swp3 <= '0';
+                swp4 <= '0';
+                buzzer_enable <= '0';
+                led_green_state <= '0';
+            end if;
+        end if;
+    end process;
+
+    -- Clignotement des LEDs 3 et 4
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if alert_active = '1' then
+                if led_blink_counter < LED_BLINK_PERIOD then
+                    led_blink_counter <= led_blink_counter + 1;
+                else
+                    led_blink_counter <= 0;
+                    led_blink_state <= not led_blink_state;
+                end if;
+            else
+                led_blink_state <= '0'; -- LEDs éteintes si alerte inactive
+            end if;
+        end if;
+    end process;
+
+    -- Signal sonore pour le buzzer
+    process(clk)
+        variable counter : integer := 0;
+    begin
+        if rising_edge(clk) then
+            if buzzer_enable = '1' then
+                if beep_counter < BEEP_DURATION then
+                    beep_counter <= beep_counter + 1;
+                else
+                    beep_counter <= 0;
+                    beep_state <= not beep_state;
+                end if;
+
+                if beep_state = '1' then
+                    if counter < BUZZER_COUNTER then
+                        counter := counter + 1;
+                    else
+                        counter := 0;
+                        buzzer_signal <= not buzzer_signal;
+                    end if;
+                else
+                    buzzer_signal <= '0';
+                end if;
+            else
+                buzzer_signal <= '0';
+                beep_counter <= 0;
+                beep_state <= '0';
+            end if;
+        end if;
+    end process;
+
+    -- Affectations des sorties
+    buzzer_out <= buzzer_signal;
+    led_green <= led_green_state;
+    led3 <= led_blink_state;
+    led4 <= led_blink_state;
+
+    -- Gestion de l'affichage sur les afficheurs
+    process(beep_state)
+    begin
+        if beep_state = '1' then
+            segments0 <= "0001100"; -- Lettre "S"
+            segments1 <= "1000000"; -- Lettre "T"
+            segments2 <= "0000111"; -- Chiffre "0"
+            segments3 <= "0010010"; -- Lettre "P"
+            led1 <= '1';
+            led2 <= '1';
+        else
+            segments0 <= "1111111";
+            segments1 <= "1111111";
+            segments2 <= "1111111";
+            segments3 <= "1111111";
+            led1 <= '0';
+            led2 <= '0';
+        end if;
+    end process;
+
+
+end Behavioral;
